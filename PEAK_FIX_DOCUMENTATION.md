@@ -2,7 +2,7 @@
 
 ## Problem Identified
 
-You correctly noticed that the peak/trough detector was producing **consecutive peaks and troughs at adjacent timesteps**, which is physically impossible and indicates the detector was picking up high-frequency noise.
+We correctly noticed that the peak/trough detector was producing **consecutive peaks and troughs at adjacent timesteps**, which is physically impossible and indicates the detector was picking up high-frequency noise.
 
 ### Example of the Bug:
 ```
@@ -196,9 +196,9 @@ Noisy Signal - Reasonable count (9): ✓ PASS
 
 ## Additional Notes
 
-### Why This Matters for Your Use Case
+### Why This Matters for Our Use Case
 
-Since you're building a **multimodal foundation model** that generates text to explain time series patterns, having noisy peak detections would:
+Since we're building a **multimodal foundation model** that generates text to explain time series patterns, having noisy peak detections would:
 
 1. **Corrupt the training data**: The model learns that peaks occur every 2-3 timesteps (nonsense)
 2. **Reduce token efficiency**: Wasted tokens on noise instead of meaningful patterns
@@ -206,7 +206,7 @@ Since you're building a **multimodal foundation model** that generates text to e
 
 ### Extending the Fix
 
-You can further customize the detector:
+We can further customize the detector:
 
 ```python
 # For very noisy signals (e.g., high-frequency sensors):
@@ -234,4 +234,4 @@ peaks = sorted(peaks, key=lambda p: p.metadata['prominence'], reverse=True)[:k]
 ✅ **Added**: Type tracking in metadata  
 ✅ **Result**: Clean, meaningful peak detection suitable for LM training  
 
-The fix ensures your hierarchical event structure accurately represents **real temporal patterns** rather than high-frequency noise.
+The fix ensures our hierarchical event structure accurately represents **real temporal patterns** rather than high-frequency noise.

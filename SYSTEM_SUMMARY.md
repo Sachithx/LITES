@@ -315,7 +315,7 @@ Diversity:
 
 ## 🎉 Conclusion
 
-Your time series event labeling system is now:
+Our time series event labeling system is now:
 - ✅ **Reorganized** with clear workflow
 - ✅ **Bug-free** with validated peak detection
 - ✅ **Documented** with comprehensive guides
