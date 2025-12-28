@@ -62,7 +62,7 @@ class TestPreprocessing:
         cleaned, mask = preprocessing.remove_outliers(data, method="zscore", threshold=2.0)
 
         assert cleaned.shape == data.shape
-        assert mask[5] == True  # Last element should be marked as outlier
+        assert mask[5]  # Last element should be marked as outlier
         assert cleaned[5] != 100  # Outlier should be replaced
 
     def test_remove_outliers_iqr(self):

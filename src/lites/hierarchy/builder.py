@@ -174,7 +174,8 @@ class HierarchyBuilder:
         # Create hierarchy based on class structure
         for class_path, events in class_groups.items():
             # Create intermediate nodes for each level in the class hierarchy
-            classes = classified_event.classes
+            # Use classes from the first event in this group (all have same class path)
+            classes = events[0].classes
             current_parent = root
 
             for i, class_name in enumerate(classes[:-1]):  # Exclude the leaf class
