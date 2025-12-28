@@ -410,6 +410,19 @@ else:                  scale = GLOBAL
 3. Build tree structure (parent-child links)
 4. Sort children by start position
 
+## 📚 Citation
+
+If you use this system in your research, please cite:
+
+```bibtex
+@software{hierarchical_event_labeling,
+  author = {Sachith},
+  title = {Hierarchical Time Series Event Labeling System},
+  year = {2024},
+  url = {https://github.com/your-repo}
+}
+```
+
 ## 📄 License
 
 MIT License - see LICENSE file
@@ -425,7 +438,7 @@ Contributions welcome! Areas for improvement:
 
 ## 📧 Contact
 
-For questions or issues, please open a GitHub issue or contact [e240203@e.ntu.edu.sg].
+For questions or issues, please open a GitHub issue or contact [your-email].
 
 ---
 
