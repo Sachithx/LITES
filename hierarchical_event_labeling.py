@@ -13,8 +13,8 @@ Workflow:
     5. Build hierarchical event tree
     6. Generate training text in various formats
 
-Author: Sachith
-Date: December 2024
+Author: Sachith Abeywickrama
+Date: December 2025
 """
 
 import torch
