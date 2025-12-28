@@ -438,7 +438,7 @@ Contributions welcome! Areas for improvement:
 
 ## 📧 Contact
 
-For questions or issues, please open a GitHub issue or contact [your-email].
+For questions or issues, please open a GitHub issue or contact [e240203@e.ntu.edu.sg].
 
 ---
 
