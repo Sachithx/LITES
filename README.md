@@ -103,47 +103,9 @@ print(text)
 
 ### Processing Pipeline
 
-```
-Raw Time Series [B, L]
-    ↓
-┌─────────────────────────────────────────┐
-│ 1. Multi-Scale Feature Extraction      │
-│    - Rolling mean (5, 10, 20, 50)      │
-│    - Rolling std (volatility)           │
-│    - Rolling slope (trend)              │
-│    - Z-scores (anomalies)               │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 2. Step-Wise Label Encoding            │
-│    - Quantile-based thresholding        │
-│    - Movement magnitude classification  │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 3. Event Detection                     │
-│    ├─ Trend Segments (slope changes)   │
-│    ├─ Peaks/Troughs (scipy.find_peaks) │
-│    ├─ Volatility Regimes (std levels)  │
-│    └─ Global Regime (overall slope)    │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 4. Hierarchical Structure Building     │
-│    - Scale classification (duration)    │
-│    - Parent-child relationships         │
-│    - Tree construction                  │
-└─────────────────────────────────────────┘
-    ↓
-┌─────────────────────────────────────────┐
-│ 5. Text Generation                     │
-│    - Depth-marked format               │
-│    - Flat sequential format            │
-│    - Narrative format                  │
-└─────────────────────────────────────────┘
-    ↓
-Training Corpus for Language Models
-```
+<div align="center">
+<img src="assets/eventlabeling.png" alt="Main Architecture" width="800">
+</div>
 
 ### Core Components
 
