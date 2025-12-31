@@ -205,3 +205,43 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+depth_marked_output_corpus.txt
+flat_output_corpus.txt
+model_config.json
+narrative_output_corpus.txt
+qwen_training_corpus.jsonl
+qwen_training_corpus.txt
+qwen_training.txt
+data/HAR/test.pt
+data/HAR/train.pt
+data/HAR/val.pt
+data_loader/UCI_HAR/har_pp.py
+data_loader/UCI_HAR/test/subject_test.txt
+data_loader/UCI_HAR/test/X_test.txt
+data_loader/UCI_HAR/test/y_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_acc_x_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_acc_y_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_acc_z_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_gyro_x_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_gyro_y_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/body_gyro_z_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/total_acc_x_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/total_acc_y_test.txt
+data_loader/UCI_HAR/test/Inertial Signals/total_acc_z_test.txt
+data_loader/UCI_HAR/train/subject_train.txt
+data_loader/UCI_HAR/train/X_train.txt
+data_loader/UCI_HAR/train/y_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_acc_x_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_acc_y_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_acc_z_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_gyro_x_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_gyro_y_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/body_gyro_z_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/total_acc_x_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/total_acc_y_train.txt
+data_loader/UCI_HAR/train/Inertial Signals/total_acc_z_train.txt
+narrative_output_corpus.txt
+data/
+data_loader/

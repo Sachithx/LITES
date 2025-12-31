@@ -119,7 +119,7 @@ Overall: sideways regime.
 </sequence_29>
 
 <sequence_30>
-Overall: sideways regime. 1 major segments detected. [27-83]: low volatility   (contains: peak)
+Overall: sideways regime.
 </sequence_30>
 
 <sequence_31>
@@ -175,7 +175,7 @@ Overall: sideways regime.
 </sequence_43>
 
 <sequence_44>
-Overall: sideways regime. 1 major segments detected. [144-203]: normal volatility   (contains: peak)
+Overall: sideways regime.
 </sequence_44>
 
 <sequence_45>
@@ -195,7 +195,7 @@ Overall: sideways regime.
 </sequence_48>
 
 <sequence_49>
-Overall: sideways regime. 1 major segments detected. [81-131]: normal volatility   (contains: peak)
+Overall: sideways regime.
 </sequence_49>
 
 <sequence_50>
