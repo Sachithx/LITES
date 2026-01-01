@@ -245,3 +245,4 @@ data_loader/UCI_HAR/train/Inertial Signals/total_acc_z_train.txt
 narrative_output_corpus.txt
 data/
 data_loader/
+.DS_Store
