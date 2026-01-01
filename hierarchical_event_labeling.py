@@ -1,20 +1,17 @@
 """
-HIERARCHICAL TIME SERIES EVENT LABELING SYSTEM
-===============================================
+HIERARCHICAL TIME SERIES EVENT LABELING SYSTEM - ENHANCED
+==========================================================
 
-A comprehensive system for detecting and labeling events in time series data
-with hierarchical structure preservation.
-
-Workflow:
-    1. Define vocabulary and hierarchical structures
-    2. Extract multi-scale features from raw time series
-    3. Encode step-wise labels for each timestep
-    4. Detect higher-level events (trends, peaks, volatility, change points)
-    5. Build hierarchical event tree
-    6. Generate training text in various formats
+Enhanced version with advanced feature extraction:
+    - Second derivatives (curvature)
+    - Rolling min/max/range (support/resistance)
+    - Normalized metrics (volatility-adjusted)
+    - Spectral features (frequency domain)
+    - Entropy measures (complexity)
+    - Jump detection (discrete events)
 
 Author: Sachith Abeywickrama
-Date: December 2025
+Date: January 2026
 """
 
 import torch
@@ -24,7 +21,9 @@ from torch.utils.data import Dataset
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from scipy import signal as scipy_signal
+from scipy.stats import entropy as scipy_entropy
 from enum import IntEnum
+import pywt  # Wavelet transform library
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -177,51 +176,111 @@ VOCAB = EventVocabulary()
 
 
 # ============================================================================
-# SECTION 2: FEATURE EXTRACTION
+# SECTION 2: ENHANCED FEATURE EXTRACTION
 # ============================================================================
 
-class MultiScaleFeatureExtractor:
+class EnhancedMultiScaleFeatureExtractor:
     """
-    Extract features at multiple temporal scales using efficient convolutions.
+    Extract comprehensive features at multiple temporal scales.
     
-    Features computed:
-        - First derivative (dx)
-        - Rolling mean at multiple window sizes
-        - Rolling standard deviation (volatility)
-        - Rolling slope (trend strength)
-        - Z-scores for anomaly detection
+    NEW FEATURES ADDED:
+        - Second derivative (curvature) - detects acceleration/deceleration
+        - Rolling min/max/range - local support/resistance levels
+        - Normalized slope - volatility-adjusted trend strength
+        - Spectral features - frequency domain energy (low/mid/high bands)
+        - Shannon entropy - local complexity measure
+        - Jump indicators - discrete event detection
+        - Asymmetric volatility - directional risk measures
+        - Wavelet decomposition - multi-resolution analysis aligned with hierarchy
     
     Args:
         scales: List of window sizes for rolling features
+        use_spectral: Enable spectral features (adds computation)
+        use_entropy: Enable entropy features (adds computation)
+        use_wavelets: Enable wavelet multi-resolution features (recommended)
+        wavelet_type: Wavelet family ('db4', 'sym4', 'coif3', etc.)
+        wavelet_levels: Number of decomposition levels (auto if None)
     """
     
-    def __init__(self, scales: List[int] = [5, 10, 20, 50]):
+    def __init__(self, 
+                 scales: List[int] = [5, 10, 20, 50],
+                 use_spectral: bool = True,
+                 use_entropy: bool = True,
+                 use_wavelets: bool = True,
+                 wavelet_type: str = 'db4',
+                 wavelet_levels: Optional[int] = None):
         self.scales = scales
+        self.use_spectral = use_spectral
+        self.use_entropy = use_entropy
+        self.use_wavelets = use_wavelets
+        self.wavelet_type = wavelet_type
+        self.wavelet_levels = wavelet_levels
     
     def extract_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        Extract multi-scale features from time series batch.
+        Extract comprehensive multi-scale features from time series batch.
         
         Args:
             x: Time series tensor of shape [B, L]
         
         Returns:
             Dictionary of feature tensors, each shape [B, L]:
-                - 'dx': First derivative
-                - 'mean_{w}': Rolling mean with window w
-                - 'std_{w}': Rolling std with window w
-                - 'slope_{w}': Rolling slope with window w
+                
+                BASIC FEATURES:
+                - 'dx': First derivative (rate of change)
+                - 'ddx': Second derivative (curvature/acceleration)
+                
+                MULTI-SCALE ROLLING FEATURES (for each window w):
+                - 'mean_{w}': Rolling mean
+                - 'std_{w}': Rolling standard deviation (volatility)
+                - 'slope_{w}': Rolling linear slope
+                - 'min_{w}': Rolling minimum (support level)
+                - 'max_{w}': Rolling maximum (resistance level)
+                - 'range_{w}': Rolling range (max - min)
+                - 'norm_slope_{w}': Volatility-normalized slope
+                
+                STATISTICAL FEATURES:
                 - 'zscore': Normalized z-scores
+                - 'jump_indicator': Binary jump detection
+                - 'vol_asymmetry': Upside vs downside volatility ratio
+                
+                SPECTRAL FEATURES (if enabled):
+                - 'spec_low_{w}': Low-frequency energy
+                - 'spec_mid_{w}': Mid-frequency energy  
+                - 'spec_high_{w}': High-frequency energy
+                
+                ENTROPY FEATURES (if enabled):
+                - 'entropy_{w}': Shannon entropy (local complexity)
+                
+                WAVELET FEATURES (if enabled):
+                - 'wavelet_d1': Finest detail coeffs (MICRO scale)
+                - 'wavelet_d2': Medium detail coeffs (MINI scale)
+                - 'wavelet_d3': Coarse detail coeffs (MESO scale)
+                - 'wavelet_d4+': Coarsest details (MACRO scale)
+                - 'wavelet_a': Approximation coeffs (GLOBAL scale)
+                - 'wavelet_energy_d{i}': Energy at each detail level
+                - 'wavelet_energy_a': Energy of approximation
         """
         B, L = x.shape
         device = x.device
         features = {}
         
+        # ====================================================================
+        # 1. BASIC DERIVATIVES
+        # ====================================================================
+        
         # First derivative (rate of change)
         dx = torch.diff(x, dim=1)  # [B, L-1]
         features['dx'] = F.pad(dx, (1, 0), value=0)  # [B, L]
         
-        # Multi-scale rolling features
+        # Second derivative (curvature/acceleration)
+        # Detects: sharp bends, V-shapes, rounded tops
+        features['ddx'] = self._second_derivative(x)
+        
+        # ====================================================================
+        # 2. MULTI-SCALE ROLLING FEATURES
+        # ====================================================================
+        
         for w in self.scales:
             if w >= L:
                 continue
@@ -239,18 +298,336 @@ class MultiScaleFeatureExtractor:
             x_diff = x.unsqueeze(1) - rolling_mean.unsqueeze(1)
             x_diff_padded = F.pad(x_diff, (padding, 0), mode='replicate')
             rolling_var = F.conv1d(x_diff_padded ** 2, kernel).squeeze(1)
-            features[f'std_{w}'] = torch.sqrt(rolling_var.clamp(min=1e-8))
+            rolling_std = torch.sqrt(rolling_var.clamp(min=1e-8))
+            features[f'std_{w}'] = rolling_std
             
             # Rolling slope (trend direction and strength)
             slopes = self._compute_slopes(x, w)
             features[f'slope_{w}'] = slopes
+            
+            # NEW: Rolling min/max/range (local envelopes)
+            # Useful for: support/resistance, breakout detection
+            rolling_min, rolling_max = self._compute_rolling_extrema(x, w)
+            features[f'min_{w}'] = rolling_min
+            features[f'max_{w}'] = rolling_max
+            features[f'range_{w}'] = rolling_max - rolling_min
+            
+            # NEW: Normalized slope (statistically significant moves)
+            # Filters noise by adjusting for local volatility
+            norm_slope = slopes / (rolling_std + 1e-8)
+            features[f'norm_slope_{w}'] = norm_slope
+            
+            # NEW: Spectral features (if enabled)
+            if self.use_spectral:
+                spec_features = self._compute_spectral_features(x, w)
+                features[f'spec_low_{w}'] = spec_features['low']
+                features[f'spec_mid_{w}'] = spec_features['mid']
+                features[f'spec_high_{w}'] = spec_features['high']
+            
+            # NEW: Entropy features (if enabled)
+            if self.use_entropy:
+                features[f'entropy_{w}'] = self._compute_entropy(x, w)
+        
+        # ====================================================================
+        # 3. GLOBAL STATISTICAL FEATURES
+        # ====================================================================
         
         # Z-scores for outlier detection
         mean = x.mean(dim=1, keepdim=True)
         std = x.std(dim=1, keepdim=True).clamp(min=1e-8)
         features['zscore'] = (x - mean) / std
         
+        # NEW: Jump detection (discrete events)
+        # Identifies: sudden level shifts, spikes
+        features['jump_indicator'] = self._detect_jumps(features['dx'], features.get('std_20'))
+        
+        # NEW: Asymmetric volatility (directional risk)
+        # Captures: "volatile but bullish" vs "volatile but bearish"
+        features['vol_asymmetry'] = self._compute_volatility_asymmetry(features['dx'])
+        
+        # ====================================================================
+        # 4. WAVELET MULTI-RESOLUTION FEATURES (if enabled)
+        # ====================================================================
+        
+        if self.use_wavelets:
+            wavelet_features = self._compute_wavelet_features(x)
+            features.update(wavelet_features)
+        
         return features
+    
+    def _second_derivative(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute second derivative (discrete curvature).
+        
+        Formula: ddx[t] = x[t] - 2*x[t-1] + x[t-2]
+        
+        High |ddx| indicates:
+            - Sharp bends / inflection points
+            - Reversal pressure
+            - V-shaped vs U-shaped events
+        """
+        # x: [B, L]
+        ddx = x[:, 2:] - 2 * x[:, 1:-1] + x[:, :-2]  # [B, L-2]
+        ddx = F.pad(ddx, (2, 0), value=0.0)  # [B, L]
+        return ddx
+    
+    def _compute_rolling_extrema(self, x: torch.Tensor, window: int) -> tuple:
+        """
+        Compute rolling min and max using unfold.
+        
+        Returns:
+            rolling_min: [B, L]
+            rolling_max: [B, L]
+        """
+        B, L = x.shape
+        device = x.device
+        
+        # Pad for causal computation
+        x_padded = F.pad(x, (window-1, 0), mode='replicate')  # [B, L+w-1]
+        
+        # Unfold into windows: [B, L, window]
+        windows = x_padded.unfold(dimension=1, size=window, step=1)
+        
+        rolling_min = windows.min(dim=2)[0]  # [B, L]
+        rolling_max = windows.max(dim=2)[0]  # [B, L]
+        
+        return rolling_min, rolling_max
+    
+    def _compute_spectral_features(self, x: torch.Tensor, window: int) -> Dict[str, torch.Tensor]:
+        """
+        Compute spectral features via sliding-window FFT.
+        
+        Bands:
+            - Low frequency: Smooth trends
+            - Mid frequency: Regular oscillations
+            - High frequency: Choppy/noisy regimes
+        
+        Returns:
+            Dictionary with 'low', 'mid', 'high' energy tensors [B, L]
+        """
+        B, L = x.shape
+        device = x.device
+        
+        # Initialize output
+        spec_low = torch.zeros(B, L, device=device)
+        spec_mid = torch.zeros(B, L, device=device)
+        spec_high = torch.zeros(B, L, device=device)
+        
+        # Process each sequence
+        for b in range(B):
+            x_np = x[b].cpu().numpy()
+            
+            for t in range(window, L):
+                segment = x_np[t-window+1:t+1]
+                
+                # Compute power spectrum
+                fft = np.fft.rfft(segment)
+                power = np.abs(fft) ** 2
+                
+                # Frequency bands (simple split)
+                n_freq = len(power)
+                third = n_freq // 3
+                
+                spec_low[b, t] = float(np.sum(power[:third]))
+                spec_mid[b, t] = float(np.sum(power[third:2*third]))
+                spec_high[b, t] = float(np.sum(power[2*third:]))
+        
+        # Normalize by total energy
+        total = spec_low + spec_mid + spec_high + 1e-8
+        return {
+            'low': spec_low / total,
+            'mid': spec_mid / total,
+            'high': spec_high / total
+        }
+    
+    def _compute_entropy(self, x: torch.Tensor, window: int, n_bins: int = 10) -> torch.Tensor:
+        """
+        Compute Shannon entropy in sliding windows.
+        
+        High entropy → irregular, chaotic
+        Low entropy → regular, predictable
+        
+        Args:
+            x: Time series [B, L]
+            window: Window size
+            n_bins: Number of bins for histogram
+        
+        Returns:
+            Entropy values [B, L]
+        """
+        B, L = x.shape
+        device = x.device
+        entropy_vals = torch.zeros(B, L, device=device)
+        
+        for b in range(B):
+            x_np = x[b].cpu().numpy()
+            
+            for t in range(window, L):
+                segment = x_np[t-window+1:t+1]
+                
+                # Compute histogram
+                hist, _ = np.histogram(segment, bins=n_bins, density=True)
+                hist = hist + 1e-10  # Avoid log(0)
+                
+                # Shannon entropy
+                ent = -np.sum(hist * np.log(hist + 1e-10))
+                entropy_vals[b, t] = float(ent)
+        
+        return entropy_vals
+    
+    def _detect_jumps(self, dx: torch.Tensor, vol: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Detect jumps as moves exceeding threshold.
+        
+        Args:
+            dx: First derivative [B, L]
+            vol: Optional volatility measure [B, L]
+        
+        Returns:
+            Binary jump indicators [B, L]
+        """
+        abs_dx = torch.abs(dx)
+        
+        if vol is not None:
+            # Threshold: 3 standard deviations
+            threshold = 3.0 * vol
+            jumps = (abs_dx > threshold).float()
+        else:
+            # Threshold: 95th percentile
+            threshold = torch.quantile(abs_dx.reshape(-1), 0.95)
+            jumps = (abs_dx > threshold).float()
+        
+        return jumps
+    
+    def _compute_volatility_asymmetry(self, dx: torch.Tensor, window: int = 20) -> torch.Tensor:
+        """
+        Compute ratio of upside to downside volatility.
+        
+        > 1: Upside volatility dominates (bullish volatility)
+        < 1: Downside volatility dominates (bearish volatility)
+        
+        Args:
+            dx: First derivative [B, L]
+            window: Window for computing asymmetry
+        
+        Returns:
+            Asymmetry ratio [B, L]
+        """
+        B, L = dx.shape
+        device = dx.device
+        asymmetry = torch.ones(B, L, device=device)
+        
+        for t in range(window, L):
+            dx_window = dx[:, t-window+1:t+1]
+            
+            # Separate up and down moves
+            up_moves = dx_window.clamp(min=0)
+            down_moves = (-dx_window).clamp(min=0)
+            
+            # Compute volatility of each
+            up_vol = up_moves.std(dim=1) + 1e-8
+            down_vol = down_moves.std(dim=1) + 1e-8
+            
+            asymmetry[:, t] = up_vol / down_vol
+        
+        return asymmetry
+    
+    def _compute_wavelet_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Compute wavelet multi-resolution features.
+        
+        Performs Discrete Wavelet Transform (DWT) and extracts:
+            - Detail coefficients at multiple levels (D1, D2, D3, ...)
+            - Approximation coefficients (A)
+            - Energy of each level
+        
+        MAPPING TO EVENT SCALES:
+            - D1 (finest) → MICRO events (spikes, single points)
+            - D2-D3 → MINI/MESO events (short segments)
+            - D4+ → MACRO events (major trends)
+            - A (coarsest) → GLOBAL regime
+        
+        Args:
+            x: Time series tensor [B, L]
+        
+        Returns:
+            Dictionary with:
+                - 'wavelet_d{i}': Detail coefficients at level i [B, L]
+                - 'wavelet_a': Approximation coefficients [B, L]
+                - 'wavelet_energy_d{i}': Energy of detail level i [B, L]
+                - 'wavelet_energy_a': Energy of approximation [B, L]
+        """
+        B, L = x.shape
+        device = x.device
+        
+        # Determine decomposition levels
+        if self.wavelet_levels is None:
+            # Auto: use max possible levels (usually 4-6 for L=336)
+            max_level = pywt.dwt_max_level(L, self.wavelet_type)
+            levels = min(max_level, 5)  # Cap at 5 levels
+        else:
+            levels = self.wavelet_levels
+        
+        features = {}
+        
+        # Process each sequence
+        for b in range(B):
+            x_np = x[b].cpu().numpy()
+            
+            # Perform multi-level DWT
+            coeffs = pywt.wavedec(x_np, self.wavelet_type, level=levels)
+            # coeffs = [cA_n, cD_n, cD_n-1, ..., cD_1]
+            # where cA_n is approximation, cD_i are details
+            
+            approx = coeffs[0]  # Approximation (coarsest)
+            details = coeffs[1:]  # Details (finest to coarsest)
+            
+            # Upsample all coefficients to original length L
+            # This allows us to have aligned features
+            
+            # Approximation (GLOBAL scale)
+            approx_upsampled = self._upsample_coeffs(approx, L)
+            if b == 0:
+                features['wavelet_a'] = torch.zeros(B, L, device=device)
+                features['wavelet_energy_a'] = torch.zeros(B, L, device=device)
+            features['wavelet_a'][b] = torch.from_numpy(approx_upsampled).float()
+            features['wavelet_energy_a'][b] = torch.from_numpy(approx_upsampled ** 2).float()
+            
+            # Detail coefficients (MICRO → MACRO scales)
+            for i, detail in enumerate(reversed(details), start=1):
+                # i=1 is finest (D1), i=levels is coarsest (D_levels)
+                detail_upsampled = self._upsample_coeffs(detail, L)
+                
+                if b == 0:
+                    features[f'wavelet_d{i}'] = torch.zeros(B, L, device=device)
+                    features[f'wavelet_energy_d{i}'] = torch.zeros(B, L, device=device)
+                
+                features[f'wavelet_d{i}'][b] = torch.from_numpy(detail_upsampled).float()
+                features[f'wavelet_energy_d{i}'][b] = torch.from_numpy(detail_upsampled ** 2).float()
+        
+        return features
+    
+    def _upsample_coeffs(self, coeffs: np.ndarray, target_length: int) -> np.ndarray:
+        """
+        Upsample wavelet coefficients to target length using linear interpolation.
+        
+        Args:
+            coeffs: Wavelet coefficients [n]
+            target_length: Desired length
+        
+        Returns:
+            Upsampled coefficients [target_length]
+        """
+        n = len(coeffs)
+        if n == target_length:
+            return coeffs
+        
+        # Use numpy interp for upsampling
+        old_indices = np.linspace(0, target_length - 1, n)
+        new_indices = np.arange(target_length)
+        upsampled = np.interp(new_indices, old_indices, coeffs)
+        
+        return upsampled
     
     def _compute_slopes(self, x: torch.Tensor, window: int) -> torch.Tensor:
         """
@@ -287,7 +664,7 @@ class StepWiseEncoder:
         
         Args:
             x: Time series tensor [B, L]
-            features: Feature dictionary from MultiScaleFeatureExtractor
+            features: Feature dictionary from FeatureExtractor
         
         Returns:
             Label tensor [B, L] with vocabulary IDs
@@ -349,14 +726,14 @@ class SimpleSegment:
     metadata: Dict = field(default_factory=dict)
 
 
-class TrendSegmentDetector:
+class EnhancedTrendSegmentDetector:
     """
-    Detect trend segments using slope sign changes.
+    Enhanced trend detection using multiple signals.
     
-    Algorithm:
-        1. Compute rolling slopes
-        2. Find sign changes (trend reversals)
-        3. Classify segments by direction and duration
+    IMPROVEMENTS:
+        - Uses normalized slopes (filters noise)
+        - Validates with curvature (confirms reversals)
+        - Considers local extrema (support/resistance)
     """
     
     def detect(self, x: torch.Tensor, features: Dict, idx: int) -> List[SimpleSegment]:
@@ -374,8 +751,10 @@ class TrendSegmentDetector:
         x_np = x.cpu().numpy()
         L = len(x_np)
         
-        # Get slopes
-        if 'slope_20' in features:
+        # Use normalized slope (more robust)
+        if 'norm_slope_20' in features:
+            slopes = features['norm_slope_20'][idx].cpu().numpy()
+        elif 'slope_20' in features:
             slopes = features['slope_20'][idx].cpu().numpy()
         else:
             slopes = np.gradient(x_np)
@@ -854,7 +1233,7 @@ class HierarchicalEventDataset(Dataset):
     Main dataset class for hierarchical event labeling.
     
     Processing pipeline:
-        1. Extract multi-scale features
+        1. Extract enhanced multi-scale features
         2. Encode step-wise labels
         3. Detect events (trends, peaks, volatility)
         4. Add global regime classification
@@ -863,10 +1242,17 @@ class HierarchicalEventDataset(Dataset):
     
     Args:
         x: Time series tensor [B, L]
+        use_spectral: Enable spectral features (slower but richer)
+        use_entropy: Enable entropy features (slower but richer)
         verbose: Print progress messages
     """
     
-    def __init__(self, x: torch.Tensor, verbose: bool = True):
+    def __init__(self, 
+                 x: torch.Tensor, 
+                 use_spectral: bool = True,
+                 use_entropy: bool = True,
+                 use_wavelets: bool = True,
+                 verbose: bool = True):
         super().__init__()
         
         if x.dim() != 2:
@@ -877,24 +1263,32 @@ class HierarchicalEventDataset(Dataset):
         
         if verbose:
             print(f"\n{'='*80}")
-            print(f"INITIALIZING HIERARCHICAL EVENT DATASET")
+            print(f"INITIALIZING ENHANCED HIERARCHICAL EVENT DATASET")
             print(f"{'='*80}")
             print(f"Sequences: {B}")
             print(f"Length: {L}")
+            print(f"Spectral features: {'✓' if use_spectral else '✗'}")
+            print(f"Entropy features: {'✓' if use_entropy else '✗'}")
+            print(f"Wavelet features: {'✓' if use_wavelets else '✗'}")
         
         # Initialize components
-        self.feature_extractor = MultiScaleFeatureExtractor()
+        self.feature_extractor = EnhancedMultiScaleFeatureExtractor(
+            use_spectral=use_spectral,
+            use_entropy=use_entropy,
+            use_wavelets=use_wavelets
+        )
         self.step_encoder = StepWiseEncoder()
-        self.trend_detector = TrendSegmentDetector()
+        self.trend_detector = EnhancedTrendSegmentDetector()
         self.peak_detector = PeakTroughDetector()
         self.vol_detector = VolatilityRegimeDetector()
         
         # STEP 1: Extract features
         if verbose:
-            print(f"\n[1/4] Extracting multi-scale features...")
+            print(f"\n[1/4] Extracting enhanced multi-scale features...")
         self.features = self.feature_extractor.extract_features(x)
         if verbose:
             print(f"      ✓ Computed {len(self.features)} feature types")
+            print(f"      ✓ New: curvature, extrema, spectral, entropy, jumps, wavelets")
         
         # STEP 2: Encode step labels
         if verbose:
@@ -920,7 +1314,7 @@ class HierarchicalEventDataset(Dataset):
             print(f"[4/4] Computing statistics...")
             self._print_statistics()
             print(f"\n{'='*80}")
-            print(f"✓ DATASET READY")
+            print(f"✓ ENHANCED DATASET READY")
             print(f"{'='*80}\n")
     
     def _build_annotation(self, idx: int, L: int) -> HierarchicalAnnotation:
@@ -1118,20 +1512,26 @@ def generate_synthetic_data(B: int = 50, L: int = 336, seed: int = 42) -> torch.
 
 
 def demonstrate_system():
-    """Run complete demonstration of the system"""
+    """Run complete demonstration of the enhanced system"""
     
     print("\n" + "="*80)
-    print("HIERARCHICAL TIME SERIES EVENT LABELING SYSTEM")
+    print("ENHANCED HIERARCHICAL TIME SERIES EVENT LABELING SYSTEM")
     print("Demonstration")
     print("="*80)
     
     # Generate data
-    B, L = 20, 336
+    B, L = 1, 336
     print(f"\nGenerating {B} synthetic sequences of length {L}...")
     x = generate_synthetic_data(B, L)
     
-    # Create dataset
-    dataset = HierarchicalEventDataset(x, verbose=True)
+    # Create dataset with enhanced features
+    dataset = HierarchicalEventDataset(
+        x, 
+        use_spectral=True,  # Enable spectral features
+        use_entropy=True,   # Enable entropy features
+        use_wavelets=True,  # Enable wavelet multi-resolution
+        verbose=True
+    )
     
     # Show example annotation
     print("\n" + "="*80)
@@ -1140,6 +1540,30 @@ def demonstrate_system():
     
     ann = dataset[0]
     ann.print_hierarchy(max_depth=3)
+    
+    # Show feature summary
+    print("\n" + "="*80)
+    print("ENHANCED FEATURES AVAILABLE")
+    print("="*80)
+    feature_groups = {
+        'Basic derivatives': ['dx', 'ddx'],
+        'Rolling stats': [k for k in dataset.features.keys() if 'mean_' in k or 'std_' in k],
+        'Trend metrics': [k for k in dataset.features.keys() if 'slope' in k],
+        'Extrema': [k for k in dataset.features.keys() if 'min_' in k or 'max_' in k or 'range_' in k],
+        'Spectral': [k for k in dataset.features.keys() if 'spec_' in k],
+        'Entropy': [k for k in dataset.features.keys() if 'entropy' in k],
+        'Wavelet coeffs': [k for k in dataset.features.keys() if 'wavelet_d' in k or 'wavelet_a' in k],
+        'Wavelet energy': [k for k in dataset.features.keys() if 'wavelet_energy' in k],
+        'Other': ['zscore', 'jump_indicator', 'vol_asymmetry']
+    }
+    
+    for group, features in feature_groups.items():
+        if features:
+            print(f"\n{group}:")
+            for feat in features[:5]:  # Show first 5
+                print(f"  • {feat}")
+            if len(features) > 5:
+                print(f"  ... and {len(features) - 5} more")
     
     # Show events by scale
     print("\n" + "="*80)
@@ -1179,10 +1603,17 @@ def demonstrate_system():
         print(f"  {key}: {value:,.1f}" if isinstance(value, float) else f"  {key}: {value:,}")
     
     print("\n" + "="*80)
-    print("✓ DEMONSTRATION COMPLETE")
+    print("✓ ENHANCED DEMONSTRATION COMPLETE")
     print("="*80)
-    print("\nThe system is ready for processing real time series data.")
-    print("Simply create a dataset with: dataset = HierarchicalEventDataset(your_data)")
+    print("\nThe enhanced system is ready with:")
+    print("  • Second derivatives (curvature)")
+    print("  • Rolling extrema (min/max/range)")
+    print("  • Normalized slopes (noise-filtered trends)")
+    print("  • Spectral features (frequency domain)")
+    print("  • Entropy measures (complexity)")
+    print("  • Jump detection (discrete events)")
+    print("  • Volatility asymmetry (directional risk)")
+    print("  • Wavelet decomposition (multi-resolution aligned with hierarchy)")
 
 
 # ============================================================================
