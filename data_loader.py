@@ -15,7 +15,7 @@ Format: [BOS, start_1, end_1, label_1, start_2, end_2, label_2, ..., EOS]
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 import random
 
