@@ -1,24 +1,23 @@
 """
-HAR PIX2SEQ DATASET ADAPTER - CORRECT VERSION
-==============================================
+HAR PIX2SEQ DATASET - SHUFFLED INTERVALS PER EPOCH
+===================================================
 
-Workflow:
-1. Input: Original HAR data [N, 9, 128] with labels [N]
-2. Annotation: Split to [N×9, 128] univariate → Generate hierarchical annotations
-3. Training: Reconstruct to [N, 9, 128] with grouped annotations
+Key features:
+1. Timeseries: Fixed [9, 128]
+2. Intervals: Shuffled order each epoch (per channel)
+3. Target sequence: Flat tokens [BOS, start, end, label, ..., EOS]
+4. NO HAR label in sequence (only annotations)
+5. Each channel's intervals shuffled independently
 
-Each training sample:
-    - timeseries: [9, 128] (original multi-channel)
-    - annotations: List of 9 interval lists (one per channel)
-    - har_label: Activity class (0-5)
-    - target_sequence: Pix2Seq format including all 9 channels' intervals
+Format: [BOS, start_1, end_1, label_1, start_2, end_2, label_2, ..., EOS]
 """
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
+import random
 
 
 # ============================================================================
@@ -26,103 +25,100 @@ from dataclasses import dataclass
 # ============================================================================
 
 @dataclass
-class Pix2SeqConfig:
-    """Configuration for Pix2Seq format."""
+class ShuffledPix2SeqConfig:
+    """Configuration for shuffled interval Pix2Seq format."""
     
-    num_activity_classes: int = 6   # HAR classes
-    num_event_labels: int = 64      # Event vocabulary size
-    quantization_bins: int = 1000   # Position discretization
-    max_seq_len: int = 2048         # Max tokens (9 channels × ~100 events)
+    seq_len: int = 128              # Sequence length
+    n_channels: int = 9             # Number of channels
+    num_event_labels: int = 64      # Event vocabulary
     
-    # Token ranges
+    # Token IDs
     pad_token: int = 0
-    eos_token: int = 1
-    har_class_start: int = 100      # 100-105
-    event_label_start: int = 200    # 200-263
-    coord_vocab_start: int = 1000   # 1000-1999
+    bos_token: int = 1              # BOS instead of HAR class
+    eos_token: int = 2
+    
+    # Token ranges (simplified - no HAR class tokens)
+    event_label_start: int = 100    # Event labels: 100-163
+    position_start: int = 200       # Positions: 200-327 (for 0-127)
+    
+    max_seq_len: int = 2048         # Max tokens
     
     @property
     def vocab_size(self) -> int:
-        return 100 + self.num_activity_classes + self.num_event_labels + self.quantization_bins
+        """Vocabulary: special(3) + events(64) + positions(128) = 195."""
+        return 3 + self.num_event_labels + self.seq_len
+    
+    def event_to_token(self, event_id: int) -> int:
+        """Convert event ID to token."""
+        return self.event_label_start + event_id
+    
+    def position_to_token(self, pos: int) -> int:
+        """Convert position (0-127) to token."""
+        return self.position_start + pos
 
 
 # ============================================================================
-# DATASET ADAPTER
+# SHUFFLED INTERVAL DATASET
 # ============================================================================
 
-class HARPix2SeqDataset(Dataset):
+class ShuffledIntervalDataset(Dataset):
     """
-    Adapts CompleteHierarchicalEventDataset for HAR Pix2Seq training.
+    HAR dataset with shuffled interval order per epoch.
     
-    Input:
-        - original_data: [N, 9, 128] original multi-channel sequences
-        - hierarchical_dataset: [N×9, 128] univariate annotations
-        - activity_labels: [N] HAR labels
-    
-    Output per sample:
-        - timeseries: [9, 128]
-        - intervals: List of 9 interval lists
-        - har_label: int
-        - target_sequence: [L] Pix2Seq tokens
+    Each epoch shuffles intervals independently for each channel.
+    Target sequence: [BOS, start, end, label, start, end, label, ..., EOS]
     """
     
     def __init__(self,
-                 original_data: torch.Tensor,           # [N, 9, 128]
-                 hierarchical_dataset,                  # CompleteHierarchicalEventDataset [N×9]
-                 activity_labels: torch.Tensor,         # [N]
+                 original_data: torch.Tensor,           # [N, C, L]
+                 hierarchical_dataset,                  # [N×C] univariate annotations
                  n_channels: int = 9,
-                 config: Optional[Pix2SeqConfig] = None,
+                 config: Optional[ShuffledPix2SeqConfig] = None,
+                 shuffle_on_init: bool = True,
                  verbose: bool = True):
         """
         Args:
-            original_data: Original multi-channel data [N, C, L]
+            original_data: Original multi-channel [N, C, L]
             hierarchical_dataset: Univariate annotations [N×C]
-            activity_labels: HAR labels [N]
             n_channels: Number of channels
-            config: Pix2Seq config
+            config: Configuration
+            shuffle_on_init: Shuffle intervals on initialization
             verbose: Print info
         """
         super().__init__()
         
         self.original_data = original_data
         self.hierarchical_dataset = hierarchical_dataset
-        self.activity_labels = activity_labels
         self.n_channels = n_channels
-        self.config = config or Pix2SeqConfig()
+        self.config = config or ShuffledPix2SeqConfig()
         
         N, C, L = original_data.shape
         N_annotations = len(hierarchical_dataset)
         
-        assert C == n_channels, f"Channel mismatch: {C} != {n_channels}"
-        assert N_annotations == N * C, \
-            f"Annotation count mismatch: {N_annotations} != {N} × {C}"
-        assert len(activity_labels) == N, \
-            f"Label count mismatch: {len(activity_labels)} != {N}"
+        assert C == n_channels
+        assert N_annotations == N * C
         
         if verbose:
             print(f"\n{'='*80}")
-            print(f"CREATING HAR PIX2SEQ DATASET")
+            print(f"CREATING SHUFFLED INTERVAL PIX2SEQ DATASET")
             print(f"{'='*80}")
-            print(f"Original samples: {N}")
+            print(f"Samples: {N}")
             print(f"Channels: {C}")
             print(f"Sequence length: {L}")
-            print(f"Univariate annotations: {N_annotations}")
-            print(f"HAR labels: {len(activity_labels)}")
+            print(f"Annotations: {N_annotations}")
+            print(f"Vocab size: {self.config.vocab_size}")
         
-        # Group annotations by sample and create target sequences
+        # Extract all intervals (will be shuffled per epoch)
         if verbose:
-            print(f"\nGrouping channel annotations and creating Pix2Seq sequences...")
+            print(f"\nExtracting intervals from annotations...")
         
-        self.all_intervals = []  # [N] each element is list of C interval lists
-        self.target_sequences = []
+        self.all_intervals = []  # [N] each is list of C channel intervals
         
         for i in range(N):
             if verbose and i % 500 == 0:
                 print(f"  Processing sample {i}/{N}...")
             
-            # Get annotations for all C channels of sample i
             channel_intervals = []
-            
             for c in range(C):
                 ann_idx = i * C + c
                 annotation = hierarchical_dataset[ann_idx]
@@ -130,70 +126,21 @@ class HARPix2SeqDataset(Dataset):
                 channel_intervals.append(intervals)
             
             self.all_intervals.append(channel_intervals)
-            
-            # Create Pix2Seq target sequence
-            target_seq = self._create_target_sequence(
-                activity_labels[i].item(),
-                channel_intervals,
-                L
-            )
-            self.target_sequences.append(target_seq)
         
+        # Compute statistics
         if verbose:
             self._print_statistics(N, C)
+        
+        # Shuffle on init if requested
+        if shuffle_on_init:
+            if verbose:
+                print(f"\nNote: Intervals will be shuffled on-the-fly per sample access")
+                print(f"      (no need for epoch-level shuffling)")
     
     def _extract_intervals(self, annotation) -> List[Tuple[int, int, int]]:
-        """Extract sorted intervals from annotation."""
+        """Extract intervals from annotation."""
         intervals = [(e.start, e.end, e.label) for e in annotation.all_events]
-        intervals.sort(key=lambda x: x[0])
-        return intervals
-    
-    def _create_target_sequence(self,
-                                 har_label: int,
-                                 channel_intervals: List[List[Tuple[int, int, int]]],
-                                 seq_len: int) -> torch.Tensor:
-        """
-        Create Pix2Seq target sequence.
-        
-        Format: [har_class, event1, x_min, x_max, event2, ..., EOS]
-        
-        Args:
-            har_label: HAR class (0-5)
-            channel_intervals: List of C interval lists
-            seq_len: Sequence length for normalization
-        
-        Returns:
-            Token sequence [L]
-        """
-        sequence = []
-        
-        # 1. HAR class token
-        har_token = self.config.har_class_start + har_label
-        sequence.append(har_token)
-        
-        # 2. All intervals from all channels
-        for channel_idx, intervals in enumerate(channel_intervals):
-            for start, end, label_id in intervals:
-                # Event label
-                event_token = self.config.event_label_start + label_id
-                
-                # Coordinates (normalized)
-                x_min = start / seq_len
-                x_max = end / seq_len
-                
-                x_min_token = self.config.coord_vocab_start + int(x_min * self.config.quantization_bins)
-                x_max_token = self.config.coord_vocab_start + int(x_max * self.config.quantization_bins)
-                
-                # Clamp to valid range
-                x_min_token = min(x_min_token, self.config.coord_vocab_start + self.config.quantization_bins - 1)
-                x_max_token = min(x_max_token, self.config.coord_vocab_start + self.config.quantization_bins - 1)
-                
-                sequence.extend([event_token, x_min_token, x_max_token])
-        
-        # 3. EOS token
-        sequence.append(self.config.eos_token)
-        
-        return torch.tensor(sequence, dtype=torch.long)
+        return intervals  # Don't sort - will be shuffled per access
     
     def _print_statistics(self, N: int, C: int):
         """Print dataset statistics."""
@@ -202,223 +149,252 @@ class HARPix2SeqDataset(Dataset):
             for sample_ints in self.all_intervals
         )
         
-        avg_intervals_per_sample = total_intervals / N
-        avg_intervals_per_channel = total_intervals / (N * C)
-        avg_seq_len = sum(len(seq) for seq in self.target_sequences) / len(self.target_sequences)
+        avg_per_sample = total_intervals / N
+        avg_per_channel = total_intervals / (N * C)
+        
+        # Estimate sequence length (3 tokens per interval + BOS + EOS)
+        avg_seq_len = avg_per_sample * 3 + 2
         
         print(f"\n{'='*80}")
         print(f"✓ DATASET READY")
         print(f"{'='*80}")
         print(f"Samples: {N}")
-        print(f"Total intervals (all channels): {total_intervals}")
-        print(f"Avg intervals per sample: {avg_intervals_per_sample:.1f}")
-        print(f"Avg intervals per channel: {avg_intervals_per_channel:.1f}")
-        print(f"Avg target sequence length: {avg_seq_len:.1f} tokens")
-        print(f"Vocabulary size: {self.config.vocab_size}")
+        print(f"Total intervals: {total_intervals}")
+        print(f"Avg intervals per sample: {avg_per_sample:.1f}")
+        print(f"Avg intervals per channel: {avg_per_channel:.1f}")
+        print(f"Estimated avg sequence length: {avg_seq_len:.1f} tokens")
+    
+    def shuffle_all(self):
+        """Shuffle intervals for all samples and channels."""
+        for sample_intervals in self.all_intervals:
+            for channel_intervals in sample_intervals:
+                random.shuffle(channel_intervals)
+    
+    def _create_target_sequence(self, 
+                                 channel_intervals: List[List[Tuple[int, int, int]]]) -> torch.Tensor:
+        """
+        Create flat token sequence with shuffled intervals.
+        
+        Format: [BOS, start_1, end_1, label_1, start_2, end_2, label_2, ..., EOS]
+        
+        Args:
+            channel_intervals: List of C interval lists (already shuffled)
+        
+        Returns:
+            Token sequence [L]
+        """
+        sequence = [self.config.bos_token]  # Start with BOS
+        
+        # Add all intervals from all channels
+        for channel_idx, intervals in enumerate(channel_intervals):
+            for start, end, label_id in intervals:
+                # Convert to tokens
+                start_token = self.config.position_to_token(start)
+                end_token = self.config.position_to_token(end)
+                label_token = self.config.event_to_token(label_id)
+                
+                # Add triplet
+                sequence.extend([start_token, end_token, label_token])
+        
+        # End with EOS
+        sequence.append(self.config.eos_token)
+        
+        return torch.tensor(sequence, dtype=torch.long)
     
     def __len__(self):
         return len(self.original_data)
     
     def __getitem__(self, idx):
         """
-        Get one training sample.
+        Get one sample with on-the-fly shuffling.
+        
+        IMPORTANT: Intervals are shuffled EVERY TIME this sample is accessed!
+        This means:
+        - Different shuffle in each epoch
+        - Different shuffle in each batch
+        - Same timeseries, different interval order
         
         Returns:
             {
-                'timeseries': [9, 128] - original multi-channel
-                'intervals': List of 9 interval lists
-                'har_label': int
-                'target_sequence': [L] tokens
+                'timeseries': [C, L],
+                'intervals': List of C interval lists (freshly shuffled),
+                'target_sequence': [L] flat tokens
             }
         """
+        # Get original intervals and shuffle them ON-THE-FLY
+        shuffled_intervals = []
+        for channel_intervals in self.all_intervals[idx]:
+            # Create a copy and shuffle it
+            shuffled = channel_intervals.copy()
+            random.shuffle(shuffled)
+            shuffled_intervals.append(shuffled)
+        
+        # Create target sequence with this shuffle
+        target_seq = self._create_target_sequence(shuffled_intervals)
+        
         return {
-            'timeseries': self.original_data[idx],      # [C, L]
-            'intervals': self.all_intervals[idx],        # List of C interval lists
-            'har_label': self.activity_labels[idx],
-            'target_sequence': self.target_sequences[idx]
+            'timeseries': self.original_data[idx],
+            'intervals': shuffled_intervals,
+            'target_sequence': target_seq
         }
 
 
 # ============================================================================
-# COLLATE FUNCTION
+# EPOCH SHUFFLING SAMPLER/DATALOADER
 # ============================================================================
 
-def har_collate_fn(batch: List[Dict], pad_token: int = 0) -> Dict:
-    """Collate with padding for variable-length sequences."""
+class ShuffledIntervalDataLoader:
+    """
+    DataLoader wrapper for on-the-fly interval shuffling.
     
-    # Stack tensors
-    timeseries = torch.stack([item['timeseries'] for item in batch])  # [B, C, L]
-    har_labels = torch.stack([item['har_label'] for item in batch])   # [B]
+    Intervals are shuffled EVERY TIME a sample is accessed,
+    not once per epoch. This means:
+    - Same sample in different batches → different shuffle
+    - Same sample in different epochs → different shuffle
     
-    # Pad target sequences
-    target_sequences = [item['target_sequence'] for item in batch]
-    target_lengths = torch.tensor([len(seq) for seq in target_sequences])
+    Usage:
+        loader = ShuffledIntervalDataLoader(dataset, batch_size=32)
+        
+        for epoch in range(num_epochs):
+            for batch in loader:
+                # Each sample has freshly shuffled intervals
+                train_step(batch)
+    """
     
-    max_len = max(target_lengths).item()
+    def __init__(self,
+                 dataset: ShuffledIntervalDataset,
+                 batch_size: int = 32,
+                 shuffle_samples: bool = True,
+                 num_workers: int = 4,
+                 pin_memory: bool = True,
+                 verbose: bool = False):
+        """
+        Args:
+            dataset: ShuffledIntervalDataset
+            batch_size: Batch size
+            shuffle_samples: Shuffle sample order (not interval order)
+            num_workers: DataLoader workers
+            pin_memory: Pin memory
+            verbose: Print info
+        """
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle_samples = shuffle_samples
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.verbose = verbose
+        
+        self._create_dataloader()
     
-    padded_sequences = []
-    for seq in target_sequences:
-        pad_len = max_len - len(seq)
-        padded = F.pad(seq, (0, pad_len), value=pad_token)
-        padded_sequences.append(padded)
+    def _create_dataloader(self):
+        """Create PyTorch DataLoader."""
+        self.dataloader = DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle_samples,
+            num_workers=self.num_workers,
+            collate_fn=self._collate_fn,
+            pin_memory=self.pin_memory
+        )
     
-    target_sequences = torch.stack(padded_sequences)
+    def _collate_fn(self, batch: List[Dict]) -> Dict:
+        """Collate with padding."""
+        # Stack timeseries
+        timeseries = torch.stack([item['timeseries'] for item in batch])
+        
+        # Pad target sequences
+        target_sequences = [item['target_sequence'] for item in batch]
+        target_lengths = torch.tensor([len(seq) for seq in target_sequences])
+        
+        max_len = max(target_lengths).item()
+        
+        padded_sequences = []
+        for seq in target_sequences:
+            pad_len = max_len - len(seq)
+            padded = F.pad(seq, (0, pad_len), value=self.dataset.config.pad_token)
+            padded_sequences.append(padded)
+        
+        target_sequences = torch.stack(padded_sequences)
+        
+        # Keep intervals as list
+        intervals = [item['intervals'] for item in batch]
+        
+        return {
+            'timeseries': timeseries,
+            'intervals': intervals,
+            'target_sequence': target_sequences,
+            'target_length': target_lengths
+        }
     
-    # Keep intervals as list
-    intervals = [item['intervals'] for item in batch]
+    def __iter__(self):
+        """Iterate over batches."""
+        return iter(self.dataloader)
     
-    return {
-        'timeseries': timeseries,           # [B, C, L]
-        'intervals': intervals,              # List[List[List]] - B samples × C channels × intervals
-        'har_label': har_labels,            # [B]
-        'target_sequence': target_sequences, # [B, max_len]
-        'target_length': target_lengths      # [B]
-    }
+    def __len__(self):
+        return len(self.dataloader)
 
 
 # ============================================================================
-# DATALOADER CREATION
+# CONVENIENCE FUNCTION
 # ============================================================================
 
-def create_har_dataloader(
-    original_data: torch.Tensor,        # [N, C, L]
-    hierarchical_dataset,               # CompleteHierarchicalEventDataset [N×C]
-    activity_labels: torch.Tensor,      # [N]
+def create_shuffled_dataloader(
+    original_data: torch.Tensor,
+    hierarchical_dataset,
     batch_size: int = 32,
     n_channels: int = 9,
-    config: Optional[Pix2SeqConfig] = None,
-    shuffle: bool = True,
+    config: Optional[ShuffledPix2SeqConfig] = None,
+    shuffle_samples: bool = True,
     num_workers: int = 4,
     verbose: bool = True
-) -> DataLoader:
+) -> ShuffledIntervalDataLoader:
     """
-    Create DataLoader for HAR Pix2Seq training.
+    Create dataloader with per-epoch interval shuffling.
     
     Args:
-        original_data: Original multi-channel data [N, C, L]
-        hierarchical_dataset: Univariate annotations [N×C]
-        activity_labels: HAR labels [N]
+        original_data: [N, C, L]
+        hierarchical_dataset: [N×C]
         batch_size: Batch size
         n_channels: Number of channels
-        config: Pix2Seq config
-        shuffle: Shuffle data
-        num_workers: DataLoader workers
+        config: Configuration
+        shuffle_samples: Shuffle sample order
+        num_workers: Workers
         verbose: Print info
     
     Returns:
-        DataLoader ready for training
+        ShuffledIntervalDataLoader
     """
     if config is None:
-        config = Pix2SeqConfig()
+        config = ShuffledPix2SeqConfig(
+            seq_len=original_data.shape[2],
+            n_channels=n_channels
+        )
     
     # Create dataset
-    dataset = HARPix2SeqDataset(
+    dataset = ShuffledIntervalDataset(
         original_data,
         hierarchical_dataset,
-        activity_labels,
         n_channels=n_channels,
         config=config,
+        shuffle_on_init=True,
         verbose=verbose
     )
     
-    # Create dataloader
-    dataloader = DataLoader(
+    # Create dataloader with epoch shuffling
+    dataloader = ShuffledIntervalDataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle_samples=shuffle_samples,
         num_workers=num_workers,
-        collate_fn=lambda b: har_collate_fn(b, config.pad_token),
-        pin_memory=True
+        verbose=verbose
     )
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"✓ DATALOADER READY")
+        print(f"✓ SHUFFLED DATALOADER READY")
         print(f"{'='*80}")
-        print(f"Batches: {len(dataloader)}")
-        print(f"Batch size: {batch_size}")
+        print(f"Batches per epoch: {len(dataloader)}")
+        print(f"Shuffling: On-the-fly per sample access")
+        print(f"           (Different shuffle each time sample is loaded)")
     
     return dataloader
-
-
-# ============================================================================
-# VISUALIZATION
-# ============================================================================
-
-def visualize_sample(dataset: HARPix2SeqDataset, idx: int = 0):
-    """Visualize one sample."""
-    
-    sample = dataset[idx]
-    config = dataset.config
-    
-    activity_names = ['WALKING', 'UPSTAIRS', 'DOWNSTAIRS', 'SITTING', 'STANDING', 'LAYING']
-    
-    print(f"\n{'='*80}")
-    print(f"SAMPLE {idx}")
-    print(f"{'='*80}")
-    
-    # Timeseries
-    ts = sample['timeseries']
-    print(f"\nTimeseries: {ts.shape}")
-    print(f"Value range: [{ts.min():.3f}, {ts.max():.3f}]")
-    
-    # HAR label
-    har_id = sample['har_label'].item()
-    print(f"\nHAR Activity: {activity_names[har_id]}")
-    
-    # Intervals per channel
-    intervals = sample['intervals']
-    print(f"\nAnnotations per channel:")
-    
-    from hierarchical_events_complete import VOCAB
-    
-    for ch_idx, ch_intervals in enumerate(intervals):
-        print(f"\n  Channel {ch_idx}: {len(ch_intervals)} intervals")
-        
-        if len(ch_intervals) > 0:
-            print(f"  {'Start':>6} {'End':>6} {'Label':<25}")
-            for start, end, label_id in ch_intervals[:5]:
-                label_name = VOCAB.id_to_label(label_id)
-                print(f"  {start:>6} {end:>6} {label_name:<25}")
-            
-            if len(ch_intervals) > 5:
-                print(f"  ... and {len(ch_intervals) - 5} more")
-    
-    # Total intervals
-    total_intervals = sum(len(ch_ints) for ch_ints in intervals)
-    print(f"\nTotal intervals across all channels: {total_intervals}")
-    
-    # Target sequence
-    seq = sample['target_sequence']
-    print(f"\nTarget sequence length: {len(seq)} tokens")
-    print(f"First 30 tokens: {seq[:30].tolist()}")
-    
-    # Decode
-    print(f"\nDecoded (first 5 events):")
-    tokens = seq.tolist()
-    
-    # HAR class
-    print(f"  [0] HAR: {activity_names[tokens[0] - config.har_class_start]}")
-    
-    # Events
-    i = 1
-    count = 0
-    while i < len(tokens) and tokens[i] != config.eos_token and count < 5:
-        if i + 2 >= len(tokens):
-            break
-        
-        event_id = tokens[i] - config.event_label_start
-        x_min = (tokens[i+1] - config.coord_vocab_start) / config.quantization_bins
-        x_max = (tokens[i+2] - config.coord_vocab_start) / config.quantization_bins
-        
-        event_name = VOCAB.id_to_label(event_id)
-        count += 1
-        print(f"  [{count}] {event_name}: [{x_min:.3f}, {x_max:.3f}]")
-        
-        i += 3
-    
-    if i < len(tokens) and tokens[i] != config.eos_token:
-        print(f"  ... and more events")
-    print(f"  [EOS]")
-
-# ============================================================================
